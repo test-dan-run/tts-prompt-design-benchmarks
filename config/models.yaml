@@ -5,6 +5,9 @@
 #   * a selectable "model" in the web UI,
 #   * a vLLM-Omni container the controller can spin up / tear down on demand.
 #
+# Models can also be added from the web UI ("+ Add model"); those are verified
+# against the backend image and stored in /data/models.custom.yaml.
+#
 # Weights are NEVER baked into images. They are read from the models volume,
 # mounted read-only at /models. `hf_repo` is both the Hugging Face repo id used
 # by the downloader and the sub-directory under /models, e.g.
@@ -77,5 +80,7 @@ models:
   #   host_port: 8110
   #   serve_args: [--trust-remote-code, --deploy-config, /opt/ttsbench/deploy/my.yaml]
   #   env: {SOME_VAR: "1"}
+  #   aux_repos: [org/codec]    # other HF repos the model loads at runtime (codecs,
+  #                             # tokenizers); downloaded to /models/.hf-cache
   #   gpus: "0"                 # "all", "none", or comma-separated device ids
   #   request: {input: "{text}", instructions: "{prompt}"}

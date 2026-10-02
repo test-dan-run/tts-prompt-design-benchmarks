@@ -1,4 +1,4 @@
-import type { Clip, ModelInfo, Sample, Suite } from "./types";
+import type { Clip, ModelInfo, Sample, Suite, SystemInfo, Verification } from "./types";
 
 export const API = "/api";
 
@@ -41,6 +41,22 @@ export const api = {
   deleteClip: (id: string) => req(`/clips/${id}`, { method: "DELETE" }),
   audioUrl: (clip: Clip) => API + clip.audio_url,
   exportUrl: `${API}/clips.csv`,
+
+  system: () => req<SystemInfo>("/system"),
+  verify: (repo: string, refresh = false) => post<Verification>("/catalog/verify", { repo, refresh }),
+  addModel: (body: {
+    repo: string;
+    key: string;
+    name: string;
+    request: Record<string, unknown>;
+    serve_args: string[];
+    aux_repos: string[];
+    download: boolean;
+  }) => post<ModelInfo>("/catalog/models", body),
+  removeModel: (key: string, deleteWeights: boolean) =>
+    req(`/catalog/models/${key}?delete_weights=${deleteWeights}`, { method: "DELETE" }),
+  download: (key: string) => post(`/downloads/${key}`),
+  cancelDownload: (key: string) => req(`/downloads/${key}`, { method: "DELETE" }),
 
   suites: () => req<Suite[]>("/suites"),
   importSuite: (name: string) => post<Sample[]>(`/suites/${name}/import`),

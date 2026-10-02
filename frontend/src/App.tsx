@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { AddModelDialog } from "./components/AddModelDialog";
 import { Composer } from "./components/Composer";
 import { CompareGrid } from "./components/CompareGrid";
 import { ModelsPanel } from "./components/ModelsPanel";
-import type { Clip, ModelInfo, Sample, Suite } from "./types";
+import type { Clip, ModelInfo, Sample, Suite, SystemInfo } from "./types";
 
 const HIDDEN_KEY = "ttsbench.hiddenModels";
 
@@ -31,6 +32,8 @@ export default function App() {
   const [fill, setFill] = useState<{ done: number; total: number } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [online, setOnline] = useState(true);
+  const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [adding, setAdding] = useState(false);
   const cancelFill = useRef(false);
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "error") => {
@@ -58,7 +61,7 @@ export default function App() {
 
   // Poll quickly while a backend is loading, slowly otherwise. Samples are
   // re-read periodically so clips made by the CLI benchmark show up too.
-  const starting = models.some((m) => m.state === "starting");
+  const starting = models.some((m) => m.state === "starting" || m.download?.state === "running");
   useEffect(() => {
     void refreshModels();
     const t = setInterval(refreshModels, starting ? 2000 : 6000);
@@ -67,6 +70,7 @@ export default function App() {
   useEffect(() => {
     void refreshSamples();
     api.suites().then(setSuites).catch(() => undefined);
+    api.system().then(setSystem).catch(() => undefined);
     const t = setInterval(refreshSamples, 15000);
     return () => clearInterval(t);
   }, [refreshSamples]);
@@ -150,6 +154,32 @@ export default function App() {
     }
   };
 
+  const withPending = async (key: string, fn: () => Promise<unknown>) => {
+    setPending((p) => ({ ...p, [key]: true }));
+    try {
+      await fn();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setPending((p) => ({ ...p, [key]: false }));
+      void refreshModels();
+    }
+  };
+
+  const downloadModel = (m: ModelInfo) => withPending(m.key, () => api.download(m.key));
+  const cancelDownload = (m: ModelInfo) => withPending(m.key, () => api.cancelDownload(m.key));
+  const verifyModel = (m: ModelInfo) =>
+    withPending(`verify:${m.key}`, async () => {
+      const r = await api.verify(m.hf_repo!, true);
+      toast(`${m.name}: ${r.verdict.summary} ${r.verdict.messages.join(" ")}`.trim(),
+        r.verdict.status === "error" ? "error" : "info");
+    });
+  const removeModel = (m: ModelInfo, deleteWeights: boolean) =>
+    withPending(m.key, async () => {
+      await api.removeModel(m.key, deleteWeights);
+      toast(`Removed ${m.name}${deleteWeights ? " and its weights" : ""}`, "info");
+    });
+
   const addSample = async (prompt: string, text: string, label: string, gen: boolean) => {
     try {
       const s = await api.createSample(prompt, text, label);
@@ -229,12 +259,23 @@ export default function App() {
           ) : (
             <span className="muted">No model running</span>
           )}
+          {system?.vllm_omni_version && <span className="tag">vLLM-Omni {system.vllm_omni_version}</span>}
         </div>
       </header>
 
       <main className="layout">
         <aside className="layout__side">
-          <ModelsPanel models={models} pending={pending} onStart={startModel} onStop={stopModel} />
+          <ModelsPanel
+            models={models}
+            pending={pending}
+            onStart={startModel}
+            onStop={stopModel}
+            onDownload={downloadModel}
+            onCancelDownload={cancelDownload}
+            onVerify={verifyModel}
+            onRemove={removeModel}
+            onAdd={() => setAdding(true)}
+          />
           <Composer active={active} suites={suites} onAdd={addSample} onImportSuite={importSuite} />
         </aside>
         <div className="layout__main">
@@ -262,6 +303,18 @@ export default function App() {
           />
         </div>
       </main>
+
+      {adding && (
+        <AddModelDialog
+          system={system}
+          onClose={() => setAdding(false)}
+          onAdded={(name) => {
+            setAdding(false);
+            toast(`Added ${name}. Downloading weights…`, "info");
+            void refreshModels();
+          }}
+        />
+      )}
 
       <div className="toasts">
         {toasts.map((t) => (

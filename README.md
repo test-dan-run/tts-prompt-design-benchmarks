@@ -88,8 +88,38 @@ models expose voice design differently.
 | `omnivoice` | k2-fsa/OmniVoice | `instructions` | experimental |
 | `voxcpm2` | openbmb/VoxCPM2 | parenthesised prefix of `input` | experimental |
 
-To add a model, add an entry with a unique `host_port`, download it, and restart
-the controller with `docker compose restart controller`. The UI picks it up.
+### Adding models from the UI
+
+"+ Add model" in the Models panel takes a Hugging Face repo id and checks it
+against the backend image in use before anything is downloaded. The check runs
+inside that image, so it reflects exactly the pinned vLLM-Omni version:
+
+1. **Found on Hugging Face.** Size, licence and gating come from the Hub API.
+2. **Resolves to a vLLM-Omni pipeline.** This calls vLLM-Omni's own
+   `resolve_omni_config`, the same path `vllm serve --omni` takes. Only config
+   files are fetched.
+3. **Served through `/v1/audio/speech`.** vLLM-Omni's TTS adapter detection must
+   recognise one of the pipeline stages.
+4. **Auxiliary repos.** Some models load extra repos at runtime, such as
+   MOSS-VoiceGenerator's audio tokenizer. The check scans vLLM-Omni's code for the
+   detected model family, plus the model config, for those repos. They download
+   with the model into `/models/.hf-cache`, where backends find them offline.
+5. **Voice prompt support.** This maps the detected adapter to how it takes a
+   voice description: documented voice design, `instructions` that are forwarded
+   but unverified for design, a text prefix, or none.
+
+Only models that pass the first three checks can be added. The dialog suggests a
+request template and serve arguments for the adapter, and both can be edited.
+The model is then saved to `/data/models.custom.yaml` on the data volume and its
+weights download in a one-shot downloader container, with progress in the panel.
+
+Results are cached per backend image. After changing `VLLM_OMNI_TAG`, click a
+model's version badge to re-check it. Built-in models can be verified the same
+way, and missing weights can be downloaded from their card.
+
+To add a model by hand instead, add an entry to the registry with a unique
+`host_port`, download it, and restart the controller with
+`docker compose restart controller`.
 
 ## Model weights and volumes
 
@@ -107,7 +137,7 @@ downloading. Override per model with `env:` in the registry.
 |---|---|
 | `ttsbench-models` | Model weights |
 | `ttsbench-backend-cache` | vLLM / torch compile caches, for faster restarts |
-| `ttsbench-data` | Clip library: `library.db` and audio files |
+| `ttsbench-data` | Clip library, UI-added models and cached verifications |
 
 ## APIs
 
@@ -128,7 +158,12 @@ interactive docs at http://localhost:8090/docs.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/models` | Registry, backend state and per-model clip counts |
+| GET | `/models` | Registry, backend state, download progress, verification and clip counts |
+| GET | `/system` | Backend image and vLLM-Omni version |
+| POST | `/catalog/verify` | `{repo, refresh?}` checks a repo against the pinned vLLM-Omni |
+| POST | `/catalog/models` | Adds a verified model and starts its download |
+| DELETE | `/catalog/models/{key}?delete_weights=` | Removes a UI-added model |
+| POST / DELETE | `/downloads/{key}` | Start or cancel a weights download |
 | POST | `/backends/{key}/start?wait=true` | Spin up a backend |
 | POST | `/backends/{key}/stop` | Remove a backend container |
 | GET | `/backends/{key}/logs` | Container log tail |

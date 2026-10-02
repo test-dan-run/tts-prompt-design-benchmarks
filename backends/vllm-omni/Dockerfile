@@ -4,6 +4,7 @@ ARG VLLM_OMNI_IMAGE=vllm/vllm-omni:v0.30.0
 FROM ${VLLM_OMNI_IMAGE}
 
 COPY serve.sh /usr/local/bin/ttsbench-serve
+COPY probe.py /usr/local/bin/ttsbench-probe.py
 RUN chmod +x /usr/local/bin/ttsbench-serve && mkdir -p /models /opt/ttsbench/deploy
 COPY deploy/ /opt/ttsbench/deploy/
 

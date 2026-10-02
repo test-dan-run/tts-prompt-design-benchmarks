@@ -25,14 +25,18 @@ from pydantic import BaseModel, Field
 
 from .audio import wav_info
 from .backends import BackendError, BackendManager
+from .catalog import Catalog
+from .downloads import DownloadManager
 from .library import Library
 from .settings import Settings, load_registry, render_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 settings = Settings()
-registry = load_registry(settings.registry_path)
+registry = load_registry(settings.registry_path, settings.data_dir / "models.custom.yaml")
 manager = BackendManager(settings, registry)
+catalog = Catalog(settings, registry, manager.client)
+downloads = DownloadManager(settings, manager.client)
 library = Library(settings.data_dir)
 SUITES_DIR = Path("/benchmarks")
 
@@ -59,7 +63,24 @@ async def list_models() -> list[dict[str, Any]]:
     summary = library.model_summary()
     out = []
     for st in await run_in_threadpool(manager.list, True):
-        out.append({**st, "in_registry": True, "library": summary.get(st["key"], {"clips": 0, "samples": 0})})
+        spec = registry[st["key"]]
+        dl = await run_in_threadpool(downloads.status, spec)
+        if dl and dl["state"] == "running":
+            st["downloaded"] = False
+        record = catalog.cached(spec.hf_repo)
+        out.append({
+            **st,
+            "in_registry": True,
+            "library": summary.get(st["key"], {"clips": 0, "samples": 0}),
+            "download": dl,
+            "verification": {
+                "status": record["verdict"]["status"],
+                "voice_design": record["verdict"]["voice_design"],
+                "vllm_omni_version": record["vllm_omni_version"],
+                "checked_at": record["checked_at"],
+                "messages": record["verdict"]["messages"],
+            } if record else None,
+        })
     for key, stats in summary.items():
         if key not in registry:
             out.append({"key": key, "name": stats.get("model_name") or key, "state": "unavailable",
@@ -82,6 +103,8 @@ async def get_backend(key: str) -> dict[str, Any]:
 
 @app.post("/backends/{key}/start")
 async def start_backend(key: str, wait: bool = False, timeout: float | None = None) -> dict[str, Any]:
+    if downloads.is_active(key):
+        raise HTTPException(409, f"'{key}' is still downloading")
     try:
         st = await run_in_threadpool(manager.start, key)
         if wait:
@@ -114,6 +137,91 @@ async def backend_logs(key: str, tail: int = 200) -> str:
     except KeyError:
         raise _unknown_model(key)
     return await run_in_threadpool(manager.logs, key, tail)
+
+
+# --------------------------------------------------------- catalog / downloads
+@app.get("/system")
+async def system() -> dict[str, Any]:
+    return {
+        "backend_image": settings.backend_image,
+        "vllm_omni_version": await run_in_threadpool(catalog.vllm_omni_version),
+        "exclusive_backends": settings.exclusive,
+    }
+
+
+class VerifyIn(BaseModel):
+    repo: str
+    refresh: bool = False
+
+
+@app.post("/catalog/verify")
+async def verify_model(req: VerifyIn) -> dict[str, Any]:
+    """Check a Hugging Face repo against the pinned vLLM-Omni build (~30 s uncached)."""
+    try:
+        return await run_in_threadpool(catalog.verify, req.repo, req.refresh)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class AddModelIn(BaseModel):
+    repo: str
+    key: str
+    name: str = ""
+    request: dict[str, Any]
+    serve_args: list[str] = Field(default_factory=lambda: ["--trust-remote-code"])
+    notes: str = ""
+    aux_repos: list[str] | None = None
+    download: bool = True
+
+
+@app.post("/catalog/models")
+async def add_model(req: AddModelIn) -> dict[str, Any]:
+    if not any(isinstance(v, str) and "{text}" in v for v in req.request.values()):
+        raise HTTPException(400, "the request template must use {text} somewhere")
+    try:
+        spec = await run_in_threadpool(catalog.add_model, req.repo, req.key, req.name, req.request,
+                                       req.serve_args, req.notes, req.aux_repos)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if req.download and manager.is_downloaded(spec) is not True:
+        record = catalog.cached(spec.hf_repo) or {}
+        await run_in_threadpool(downloads.start, spec, record.get("total_bytes"))
+    return spec.public()
+
+
+@app.delete("/catalog/models/{key}")
+async def remove_model(key: str, delete_weights: bool = False) -> dict[str, str]:
+    try:
+        spec = registry[key]
+    except KeyError:
+        raise _unknown_model(key)
+    if spec.source != "custom":
+        raise HTTPException(400, "built-in models are defined in config/models.yaml")
+    await run_in_threadpool(manager.stop, key)
+    if delete_weights:
+        await run_in_threadpool(downloads.delete_weights, spec)
+    else:
+        await run_in_threadpool(downloads.cancel, key)
+    await run_in_threadpool(catalog.remove_model, key)
+    return {"status": "removed"}
+
+
+@app.post("/downloads/{key}")
+async def start_download(key: str) -> dict[str, Any]:
+    try:
+        spec = registry[key]
+    except KeyError:
+        raise _unknown_model(key)
+    record = catalog.cached(spec.hf_repo)
+    expected = (record or {}).get("total_bytes") or \
+        (await run_in_threadpool(catalog.hub_info, spec.hf_repo)).get("size_bytes")
+    return await run_in_threadpool(downloads.start, spec, expected)  # type: ignore[return-value]
+
+
+@app.delete("/downloads/{key}")
+async def cancel_download(key: str) -> dict[str, str]:
+    await run_in_threadpool(downloads.cancel, key)
+    return {"status": "cancelled"}
 
 
 # ------------------------------------------------------------------ generation

@@ -74,6 +74,16 @@ class Library:
         self.db.executescript(SCHEMA)
         self._import_legacy_jsonl()
 
+    # One sqlite3 connection is shared by FastAPI's worker threads, so every
+    # statement, reads included, runs under the lock and is fully fetched.
+    def _all(self, sql: str, args: tuple | list = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.db.execute(sql, args).fetchall()
+
+    def _one(self, sql: str, args: tuple | list = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self.db.execute(sql, args).fetchone()
+
     # ------------------------------------------------------------ samples
     def _sample_row(self, row: sqlite3.Row) -> dict[str, Any]:
         return dict(row)
@@ -95,7 +105,7 @@ class Library:
             return self.get_sample(sid)  # type: ignore[return-value]
 
     def get_sample(self, sample_id: str) -> dict[str, Any] | None:
-        row = self.db.execute("SELECT * FROM samples WHERE id=?", (sample_id,)).fetchone()
+        row = self._one("SELECT * FROM samples WHERE id=?", (sample_id,))
         return self._sample_row(row) if row else None
 
     def update_sample(self, sample_id: str, label: str | None) -> dict[str, Any] | None:
@@ -104,7 +114,7 @@ class Library:
         return self.get_sample(sample_id)
 
     def list_samples(self, with_clips: bool = True) -> list[dict[str, Any]]:
-        samples = [self._sample_row(r) for r in self.db.execute("SELECT * FROM samples ORDER BY created_at DESC")]
+        samples = [self._sample_row(r) for r in self._all("SELECT * FROM samples ORDER BY created_at DESC")]
         if with_clips:
             by_sample: dict[str, list[dict]] = {}
             for clip in self.list_clips():
@@ -150,7 +160,7 @@ class Library:
         return self.get_clip(cid)  # type: ignore[return-value]
 
     def get_clip(self, clip_id: str) -> dict[str, Any] | None:
-        row = self.db.execute("SELECT * FROM clips WHERE id=?", (clip_id,)).fetchone()
+        row = self._one("SELECT * FROM clips WHERE id=?", (clip_id,))
         return self._clip_row(row) if row else None
 
     def clip_path(self, clip: dict[str, Any]) -> Path:
@@ -167,7 +177,7 @@ class Library:
         q += " ORDER BY created_at DESC"
         if limit:
             q += f" LIMIT {int(limit)}"
-        return [self._clip_row(r) for r in self.db.execute(q, args)]
+        return [self._clip_row(r) for r in self._all(q, args)]
 
     def _unlink(self, clip: dict[str, Any]) -> None:
         try:
@@ -186,7 +196,7 @@ class Library:
             return True
 
     def model_summary(self) -> dict[str, dict[str, Any]]:
-        rows = self.db.execute(
+        rows = self._all(
             """SELECT model, MAX(model_name) AS model_name, COUNT(*) AS clips,
                       COUNT(DISTINCT sample_id) AS samples, AVG(rtf) AS mean_rtf
                FROM clips GROUP BY model"""

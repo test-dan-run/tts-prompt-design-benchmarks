@@ -33,6 +33,8 @@ class Settings:
     exclusive: bool = _env_bool("TTSBENCH_EXCLUSIVE_BACKENDS", True)
     shm_size: str = os.getenv("TTSBENCH_BACKEND_SHM", "8g")
     hf_token: str = os.getenv("HF_TOKEN", "")
+    downloader_image: str = os.getenv("TTSBENCH_DOWNLOADER_IMAGE", "ttsbench/model-downloader:latest")
+    probe_timeout_s: float = float(os.getenv("TTSBENCH_PROBE_TIMEOUT_S", "600"))
     synth_timeout_s: float = float(os.getenv("TTSBENCH_SYNTH_TIMEOUT_S", "600"))
     # Send one discarded request after load so the first stored clip is not a
     # cold start (which inflates latency / RTF several-fold).
@@ -53,7 +55,12 @@ class ModelSpec:
     request: dict[str, Any]
     experimental: bool = False
     notes: str = ""
+    source: str = "builtin"  # "builtin" (config/models.yaml) or "custom" (added from the UI)
+    verified_with: dict[str, Any] | None = None
+    aux_repos: list[str] = field(default_factory=list)  # extra HF repos the model loads at runtime
     extra: dict[str, Any] = field(default_factory=dict)
+
+    HF_CACHE = "/models/.hf-cache"  # auxiliary repos live here, in Hugging Face cache layout
 
     @property
     def model_path(self) -> str:
@@ -68,14 +75,25 @@ class ModelSpec:
             "experimental": self.experimental,
             "notes": self.notes,
             "request_template": self.request,
+            "serve_args": self.serve_args,
+            "source": self.source,
+            "verified_with": self.verified_with,
+            "aux_repos": self.aux_repos,
         }
 
 
-def load_registry(path: Path) -> dict[str, ModelSpec]:
+def load_registry(path: Path, custom_path: Path | None = None) -> dict[str, ModelSpec]:
+    """Built-in registry, plus models added from the UI (custom file).
+    Defaults always come from the built-in file."""
     raw = yaml.safe_load(path.read_text()) or {}
     defaults = raw.get("defaults", {}) or {}
+    entries = [(k, v, "builtin") for k, v in (raw.get("models") or {}).items()]
+    if custom_path is not None and custom_path.exists():
+        custom = yaml.safe_load(custom_path.read_text()) or {}
+        builtin_keys = {e[0] for e in entries}
+        entries += [(k, v, "custom") for k, v in (custom.get("models") or {}).items() if k not in builtin_keys]
     specs: dict[str, ModelSpec] = {}
-    for key, cfg in (raw.get("models") or {}).items():
+    for key, cfg, source in entries:
         cfg = cfg or {}
         if "hf_repo" not in cfg:
             raise ValueError(f"model '{key}' is missing 'hf_repo'")
@@ -93,6 +111,9 @@ def load_registry(path: Path) -> dict[str, ModelSpec]:
             request=copy.deepcopy(cfg.get("request") or {"input": "{text}", "instructions": "{prompt}"}),
             experimental=bool(cfg.get("experimental", False)),
             notes=(cfg.get("notes") or "").strip(),
+            source=source,
+            verified_with=cfg.get("verified_with"),
+            aux_repos=list(cfg.get("aux_repos") or []),
             extra={k: v for k, v in cfg.items() if k not in ModelSpec.__dataclass_fields__},
         )
     return specs

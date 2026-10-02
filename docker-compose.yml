@@ -41,6 +41,7 @@ services:
       TTSBENCH_BACKEND_SHM: ${BACKEND_SHM:-8g}
       TTSBENCH_EXCLUSIVE_BACKENDS: ${EXCLUSIVE_BACKENDS:-true}
       TTSBENCH_WARMUP: ${BACKEND_WARMUP:-true}
+      TTSBENCH_DOWNLOADER_IMAGE: ttsbench/model-downloader:latest
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -69,9 +70,10 @@ services:
 
   # ------------------------------------------------------------------ tools
   downloader:
+    # Also launched by the controller for downloads started from the UI.
     build: ./tools/model-downloader
     image: ttsbench/model-downloader:latest
-    profiles: [tools]
+    scale: 0
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:

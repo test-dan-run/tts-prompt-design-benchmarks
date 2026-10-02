@@ -56,7 +56,17 @@ class BackendManager:
         if not root.exists():
             return None  # controller cannot see the volume; unknown
         path = root / spec.hf_repo
-        return path.is_dir() and any(path.iterdir())
+        if not (path.is_dir() and any(path.iterdir())):
+            return False
+        # huggingface_hub keeps partial files here until a download completes.
+        partial = path / ".cache" / "huggingface" / "download"
+        if partial.is_dir() and any(partial.rglob("*.incomplete")):
+            return False
+        return all(self.aux_present(repo) for repo in spec.aux_repos)
+
+    def aux_present(self, repo: str) -> bool:
+        snaps = self.s.models_dir / ".hf-cache" / f"models--{repo.replace('/', '--')}" / "snapshots"
+        return snaps.is_dir() and any(snaps.iterdir())
 
     def _probe(self, spec: ModelSpec, timeout: float = 2.0) -> bool:
         try:
@@ -172,6 +182,8 @@ class BackendManager:
                 "MODEL_PATH": spec.model_path,
                 "SERVED_MODEL_NAME": spec.hf_repo,
                 "PORT": str(spec.container_port),
+                # Auxiliary repos (codecs, tokenizers) resolve offline from here.
+                "HF_HUB_CACHE": spec.HF_CACHE,
             }
             if self.s.hf_token:
                 env["HF_TOKEN"] = self.s.hf_token
