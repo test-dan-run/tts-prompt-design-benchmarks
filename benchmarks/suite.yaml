@@ -1,0 +1,22 @@
+# Benchmark suite: every case is synthesised by every model listed (or all).
+# Listen to the results in the web UI or under the data volume (/data/audio),
+# and compare latency / real-time factor in the generated CSV.
+repeats: 1
+warmup: true
+# models: [qwen3-tts-voicedesign, breeze-tts-2]
+cases:
+  - id: warm-narrator
+    prompt: A warm, deep male narrator in his fifties, calm and measured, like a nature documentary.
+    text: The river carved its way through the valley for ten thousand years, patient and unhurried.
+  - id: excited-teen
+    prompt: An energetic teenage girl, fast-paced and bubbly, slightly breathless with excitement.
+    text: Oh my gosh, you will not believe what just happened at school today!
+  - id: stern-officer
+    prompt: A stern, authoritative female police officer, clipped delivery, low pitch, no warmth.
+    text: Step away from the vehicle and keep your hands where I can see them.
+  - id: elderly-storyteller
+    prompt: A frail elderly man with a soft, raspy voice, speaking slowly and kindly.
+    text: When I was a boy, we used to walk four miles to school, and we were grateful for it.
+  - id: whisper
+    prompt: A nervous young man whispering urgently, as if hiding from someone.
+    text: Don't move. They're right outside the door. Wait until I say go.

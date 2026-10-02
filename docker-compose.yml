@@ -1,0 +1,102 @@
+# TTS prompt-design benchmark stack.
+#
+#   docker compose --profile tools build   # builds every image
+#   docker compose up -d                   # frontend (http://localhost:3000) + controller
+#   docker compose run --rm downloader --key qwen3-tts-voicedesign
+#
+# Backend (vLLM-Omni) containers are NOT listed here as long-running services:
+# the controller creates them on demand from the `ttsbench/vllm-omni` image,
+# attaches them to the `ttsbench` network and mounts the models volume read-only.
+
+name: ttsbench
+
+services:
+  # ---------------------------------------------------------------- frontend
+  frontend:
+    # React app served by nginx; /api is proxied to the controller.
+    build: ./frontend
+    image: ttsbench/frontend:latest
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      controller:
+        condition: service_healthy
+    networks: [ttsbench]
+
+  # -------------------------------------------------------------- controller
+  controller:
+    build: ./controller
+    image: ttsbench/controller:latest
+    restart: unless-stopped
+    ports:
+      - "${CONTROLLER_BIND:-127.0.0.1}:${CONTROLLER_PORT:-8090}:8090"
+    environment:
+      TTSBENCH_BACKEND_IMAGE: ${BACKEND_IMAGE:-ttsbench/vllm-omni:${VLLM_OMNI_TAG:-v0.30.0}}
+      TTSBENCH_MODELS_SOURCE: ${TTSBENCH_MODELS_SOURCE:-ttsbench-models}
+      TTSBENCH_CACHE_VOLUME: ttsbench-backend-cache
+      TTSBENCH_NETWORK: ttsbench
+      TTSBENCH_BACKEND_BIND: ${BACKEND_BIND:-127.0.0.1}
+      TTSBENCH_BACKEND_GPUS: ${BACKEND_GPUS:-all}
+      TTSBENCH_BACKEND_SHM: ${BACKEND_SHM:-8g}
+      TTSBENCH_EXCLUSIVE_BACKENDS: ${EXCLUSIVE_BACKENDS:-true}
+      TTSBENCH_WARMUP: ${BACKEND_WARMUP:-true}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/config:ro
+      - ./benchmarks:/benchmarks:ro
+      - ${TTSBENCH_MODELS_SOURCE:-ttsbench-models}:/models:ro
+      - ttsbench-data:/data
+    networks: [ttsbench]
+
+  # ---------------------------------------------------------------- backend
+  backend-image:
+    # Build-only: the controller launches containers from this image.
+    build:
+      context: ./backends/vllm-omni
+      args:
+        VLLM_OMNI_IMAGE: vllm/vllm-omni:${VLLM_OMNI_TAG:-v0.30.0}
+    image: ttsbench/vllm-omni:${VLLM_OMNI_TAG:-v0.30.0}
+    scale: 0
+
+  mock-backend-image:
+    # Optional GPU-free fake backend: set BACKEND_IMAGE=ttsbench/mock-tts:latest
+    # and BACKEND_GPUS=none to exercise the UI and controller without a model.
+    build: ./backends/mock
+    image: ttsbench/mock-tts:latest
+    profiles: [tools]
+
+  # ------------------------------------------------------------------ tools
+  downloader:
+    build: ./tools/model-downloader
+    image: ttsbench/model-downloader:latest
+    profiles: [tools]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ./config:/config:ro
+      - ${TTSBENCH_MODELS_SOURCE:-ttsbench-models}:/models
+
+  bench:
+    image: ttsbench/controller:latest
+    profiles: [tools]
+    entrypoint: ["python", "-m", "app.bench"]
+    environment:
+      TTSBENCH_CONTROLLER_URL: http://controller:8090
+    volumes:
+      - ./benchmarks:/benchmarks:ro
+      - ttsbench-data:/data
+    networks: [ttsbench]
+
+networks:
+  ttsbench:
+    name: ttsbench
+
+volumes:
+  ttsbench-models:
+    name: ttsbench-models
+  ttsbench-backend-cache:
+    name: ttsbench-backend-cache
+  ttsbench-data:
+    name: ttsbench-data

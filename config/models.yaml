@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------------------
+# TTS model registry.
+#
+# Every entry becomes:
+#   * a selectable "model" in the web UI,
+#   * a vLLM-Omni container the controller can spin up / tear down on demand.
+#
+# Weights are NEVER baked into images. They are read from the models volume,
+# mounted read-only at /models. `hf_repo` is both the Hugging Face repo id used
+# by the downloader and the sub-directory under /models, e.g.
+#   /models/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+#
+# `request` is the JSON body template sent to POST /v1/audio/speech.
+# The literal placeholders {prompt} (speaker/voice description) and {text}
+# (what the speaker should say) are substituted in every string value.
+# `model` and `response_format` are filled in automatically when omitted.
+# ---------------------------------------------------------------------------
+
+defaults:
+  container_port: 8091          # port vLLM-Omni listens on inside the container
+  startup_timeout_s: 1800       # first start may compile kernels / warm caches
+  serve_args:                   # appended to: vllm serve /models/<repo> --omni ...
+    - --trust-remote-code
+  env:
+    HF_HUB_OFFLINE: "1"         # weights come from the volume, never the network
+    TRANSFORMERS_OFFLINE: "1"
+
+models:
+  qwen3-tts-voicedesign:
+    name: Qwen3-TTS 1.7B VoiceDesign
+    hf_repo: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+    host_port: 8101
+    serve_args: [--trust-remote-code, --enforce-eager]
+    notes: Reference voice-design model in vLLM-Omni (task_type=VoiceDesign).
+    request:
+      input: "{text}"
+      task_type: VoiceDesign
+      instructions: "{prompt}"
+      language: Auto
+
+  breeze-tts-2:
+    name: Breeze-TTS-2
+    hf_repo: BreezeBlue/Breeze-TTS-2
+    host_port: 8102
+    notes: "`instructions` without `ref_audio` triggers voice design."
+    request:
+      input: "{text}"
+      instructions: "{prompt}"
+
+  omnivoice:
+    name: OmniVoice
+    hf_repo: k2-fsa/OmniVoice
+    host_port: 8103
+    experimental: true
+    notes: >-
+      vLLM-Omni documents full voice design for OmniVoice offline only; online
+      serving honours `instructions` as style control. Verify on your version.
+    request:
+      input: "{text}"
+      instructions: "{prompt}"
+
+  voxcpm2:
+    name: VoxCPM2
+    hf_repo: openbmb/VoxCPM2
+    host_port: 8104
+    experimental: true
+    notes: >-
+      VoxCPM2 designs voices from a parenthesised description prefixed to the
+      text. vLLM-Omni does not document this path; verify on your version.
+    request:
+      input: "({prompt}){text}"
+
+  # Template for adding a model:
+  # my-model:
+  #   name: Pretty Name
+  #   hf_repo: org/repo
+  #   host_port: 8110
+  #   serve_args: [--trust-remote-code, --deploy-config, /opt/ttsbench/deploy/my.yaml]
+  #   env: {SOME_VAR: "1"}
+  #   gpus: "0"                 # "all", "none", or comma-separated device ids
+  #   request: {input: "{text}", instructions: "{prompt}"}
